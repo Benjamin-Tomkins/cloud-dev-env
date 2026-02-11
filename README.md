@@ -1,4 +1,4 @@
-# CDE - Cloud Developer Experience
+# CDE - Cloud Developer Environment
 
 Local Kubernetes environment for experimenting with OpenTelemetry auto-instrumentation, HashiCorp Vault secrets management, and cloud-native observability patterns.
 
