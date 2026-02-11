@@ -10,18 +10,18 @@
 #   4. Dispatch to the requested command (deploy, status, up, down, etc.)
 #
 #   ┌──────────────────────────────────────────────────────────────────┐
-#   │  CLI invocation: ./cde.sh [options] <command> [args]            │
+#   │  CLI invocation: ./cde.sh [options] <command> [args]             │
 #   │                                                                  │
 #   │  1. Parse options (--verbose, --help)                            │
 #   │  2. Source libs:                                                 │
-#   │     constants → log → timing → ui → k8s → helm →               │
-#   │     cluster → tls → vault → services → portforward              │
+#   │     constants → log → timing → ui → k8s → helm →                 │
+#   │     cluster → tls → vault → services → portforward               │
 #   │  3. init_log()                                                   │
 #   │  4. Dispatch:                                                    │
-#   │     ├─ deploy all → prereqs → cluster → helm repos →            │
-#   │     │               ingress → cert-mgr → all services → summary │
-#   │     ├─ deploy <svc> → require_cluster → helm repos → deploy_*() │
-#   │     ├─ up → prereqs → create_cluster → ingress → cert-manager   │
+#   │     ├─ deploy all → prereqs → cluster → helm repos →             │
+#   │     │               ingress → cert-mgr → all services → summary  │
+#   │     ├─ deploy <svc> → require_cluster → helm repos → deploy_*()  │
+#   │     ├─ up → prereqs → create_cluster → ingress → cert-manager    │
 #   │     ├─ down / destroy → stop / delete cluster                    │
 #   │     ├─ status → cluster + services + apps table                  │
 #   │     └─ open / forward / serve → service access commands          │
