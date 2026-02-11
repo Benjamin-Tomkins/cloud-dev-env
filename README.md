@@ -4,6 +4,8 @@ Local Kubernetes environment for experimenting with OpenTelemetry auto-instrumen
 
 **Goal:** Fast local iteration on K8s configurations with zero observability code in applications.
 
+<img width="546" height="542" alt="image" src="https://github.com/user-attachments/assets/25f3e463-315d-4aa2-b555-ea235f00cc24" />
+
 ## Quick Start
 
 ```bash
