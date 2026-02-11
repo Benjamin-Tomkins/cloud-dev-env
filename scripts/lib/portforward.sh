@@ -1,5 +1,24 @@
 #!/usr/bin/env bash
-# portforward.sh -- Port-forward lifecycle
+# portforward.sh -- Service access info and endpoint verification
+#
+# Why This Exists:
+#   Originally managed kubectl port-forward processes. Now that all services
+#   are accessed via Ingress at *.localhost:8443, port-forwards are no longer
+#   needed. This module handles: endpoint verification, interactive service
+#   selection (forward/open commands), and the active-session marker file.
+#
+# How It Works:
+#   1. start_port_forwards() creates a marker file (no actual port-forwards)
+#   2. forward_*() functions display service URLs and credentials
+#   3. select_forward() provides interactive service selection
+#   4. verify_endpoints() probes each Ingress URL to confirm reachability
+#
+# Dependencies: log.sh, ui.sh, k8s.sh (release_exists, get_vault_token,
+#               get_grafana_password), constants.sh
+
+# =============================================================================
+# 1. Manage Session Marker
+# =============================================================================
 
 # Start all port-forwards in background and save PIDs
 start_port_forwards() {
@@ -28,7 +47,12 @@ stop_port_forwards() {
     fi
 }
 
-# Individual forward functions
+# =============================================================================
+# 2. Display Service Access Info
+# =============================================================================
+# Display service URL and credentials. Named forward_* for historical reasons —
+# these now just print Ingress URLs, no actual port-forwards are created.
+
 forward_vault() {
     log_file "INFO" "forward_vault: vault available via Ingress"
     local token
@@ -71,7 +95,7 @@ forward_dashboard() {
     fi
 }
 
-# Interactive forward selection
+# Interactive service picker — lists deployed services and opens selected one
 select_forward() {
     echo -e "\n${PURPLE}◆ CDE${NC} Port Forward\n"
 
@@ -126,7 +150,14 @@ select_forward() {
     esac
 }
 
-# Verify endpoint accessibility (Phase 6)
+# =============================================================================
+# 3. Verify Endpoint Reachability
+# =============================================================================
+
+# Probe each deployed service's Ingress URL to confirm end-to-end reachability.
+# Used in post-deploy summary and status display.
+#
+# Returns: 0 if all reachable, 1 if any unreachable
 verify_endpoints() {
     log_file "INFO" "verify_endpoints: starting endpoint checks"
     local all_ok=true

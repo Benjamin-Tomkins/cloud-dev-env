@@ -1,18 +1,64 @@
 #!/usr/bin/env bash
-# vault.sh -- Vault deploy/init/unseal (full rewrite with smart waits)
+# vault.sh -- Vault deploy/init/unseal lifecycle
+#
+# How It Works:
+#   1. Helm install (standalone mode, in-memory storage, TLS via Ingress)
+#   2. Wait for pod Running (smart poll, not fixed sleep)
+#   3. Check vault status and branch:
+#   4. Verify health endpoint returns 200
+#
+#   Init/Unseal State Machine:
+#
+#     helm install ──► wait pod Running ──► vault status?
+#                                             │
+#                    ┌───────────────────────┬┴──────────────────────┐
+#                    ▼                       ▼                       ▼
+#              not initialized          sealed + key            sealed, no key
+#                    │                       │                       │
+#                    ▼                       ▼                       ▼
+#              operator init            unseal with             delete statefulset
+#              (1 key, 1 thr)           stored key              + helm re-deploy
+#                    │                       │                       │
+#                    ▼                       │                       ▼
+#              store creds in                │                  operator init
+#              K8s Secret                    │                  (fresh start)
+#                    │                       │                       │
+#                    ▼                       │                       ▼
+#                  unseal                    │                  store + unseal
+#                    │                       │                       │
+#                    └───────────┬───────────┘───────────────────────┘
+#                                ▼
+#                    vault_wait_ready (HTTP 200)
+#
+# Why This Exists:
+#   Vault requires explicit initialization and unsealing after every pod restart
+#   (we use in-memory storage for simplicity — no PVC to manage). This module
+#   automates the full init/unseal lifecycle so `deploy all` is non-interactive.
+#
+# Security Notes:
+#   - Root token and unseal key are stored in a K8s Secret for automatic unseal
+#     on pod restart. This is for local development convenience only.
+#   - The mkcert CA private key is loaded into the cluster (via tls.sh) so
+#     cert-manager can sign browser-trusted certs. Never use this in production.
+#   - vault_unseal() pipes the key via stdin to avoid exposing it in the host
+#     process table (ps aux would show it if passed as a CLI argument).
+#
+# Dependencies: log.sh, ui.sh, timing.sh, k8s.sh, tls.sh, constants.sh
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Vault helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# 1. Query and Control Vault State
+# =============================================================================
 
 # Execute a command inside the vault pod
 vault_exec() {
     kubectl exec -n vault vault-0 -- sh -c "export VAULT_ADDR=http://127.0.0.1:8200 && $1" 2>/dev/null
 }
 
-# Get vault status as JSON
-# Note: vault status returns exit code 2 when sealed, so we can't use || fallback
-# directly -- it would append the fallback to the real output
+# Get vault status as JSON.
+# vault status returns exit code 2 when sealed, so we suppress errors with
+# `|| true` and validate the output by checking for the "initialized" key.
+# Returns a fake default `{"initialized":false,"sealed":true}` when vault is
+# unreachable, so callers can always parse the JSON without nil checks.
 vault_status_json() {
     local output
     output=$(vault_exec 'vault status -format=json' 2>/dev/null) || true
@@ -65,19 +111,25 @@ vault_wait_ready() {
     return 1
 }
 
-# Unseal vault by piping key via stdin (avoids exposing key in host process table)
-# Note: vault doesn't support reading unseal keys from stdin directly, so we
-# pipe to `read` in the pod's shell, then pass as an argument within the pod.
+# Unseal vault by piping key via stdin.
+# vault CLI doesn't support reading unseal keys from stdin directly, so we pipe
+# to `read` inside the pod's shell and pass as an argument there. The key only
+# appears in the pod's process table (internal to the container), never on the host.
+#
+# Usage: vault_unseal <unseal_key>
 vault_unseal() {
     local key="$1"
     printf '%s\n' "$key" | kubectl exec -i -n vault vault-0 -- \
         sh -c 'export VAULT_ADDR=http://127.0.0.1:8200 && read KEY && vault operator unseal "$KEY"' 2>/dev/null
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Main deploy function
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# 2. Deploy and Initialize Vault
+# =============================================================================
 
+# Deploy Vault: helm install → wait for pod → init/unseal → health check.
+# Handles three states: fresh install, sealed (stored key available), and
+# sealed with lost key (full reset via statefulset delete + re-init).
 deploy_vault() {
     # Skip if already healthy
     if svc_healthy vault vault; then
@@ -115,7 +167,8 @@ storage "inmem" {}
 disable_mlock = true' \
         --timeout 3m 2>&1 | verbose_or_log; then
 
-        # Clean up any old TLS cert with wrong SANs (from pre-Ingress deploys)
+        # Clean up stale TLS cert/secret that may have wrong SANs from a
+        # previous deploy. cert-manager will recreate from the Ingress annotation.
         kubectl delete certificate vault-tls -n vault &>/dev/null || true
         kubectl delete secret vault-tls -n vault &>/dev/null || true
 
@@ -214,7 +267,8 @@ CREDEOF
                 log_file "WARN" "Vault initialized but unseal key lost - full reset"
                 [[ "$VERBOSE" == "true" ]] && echo -e "\n  ${DIM}Vault initialized but unseal key lost - resetting...${NC}"
 
-                # Delete the statefulset to clear ephemeral data, then let helm recreate
+                # Delete statefulset to clear ephemeral inmem storage — helm upgrade
+                # alone won't reset vault state because the pod keeps running
                 kubectl delete statefulset vault -n vault --cascade=foreground --grace-period=5 2>&1 | verbose_or_log || true
                 kubectl delete pvc -n vault -l app.kubernetes.io/instance=vault 2>&1 | verbose_or_log || true
 

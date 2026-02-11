@@ -1,7 +1,30 @@
 #!/usr/bin/env bash
 #
 # deploy.sh -- Build, deploy, and test applications
-# Matches the CDE infrastructure script output style
+#
+# How It Works:
+#   1. Build Docker images (java-api, python-api)
+#   2. Import images into k3d cluster registry
+#   3. Create namespace + service account
+#   4. Configure Vault secrets & Kubernetes auth (via vault-setup.sh)
+#   5. Apply K8s manifests + rollout restart (picks up OTel/Vault injection)
+#   6. Wait for pods ready
+#   7. Run smoke tests (verify end-to-end integration)
+#
+#   Build → Deploy → Test Pipeline:
+#
+#     Build                    Deploy                           Test
+#     ─────                    ──────                           ────
+#     docker build java  ─┐    namespace + SA ──► vault-setup   pod running?
+#     docker build python ─┼─► k3d image import   │             OTel injected?
+#                          │                       ▼             Vault injected?
+#                          │    kubectl apply manifests          secrets present?
+#                          │    rollout restart ──────────────►  endpoint responds?
+#                          │    wait pods ready                  vault_injected=true?
+#                          └──────────────────────────────────►  traces in Jaeger?
+#
+# The stage() function wraps each step with timing + spinner, so the output
+# matches the CDE infrastructure scripts' visual style.
 #
 set -euo pipefail
 
@@ -20,9 +43,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Timing
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# 1. Track Stage Timing and Results
+# =============================================================================
 _STAGE_TIMES=()
 
 format_duration() {
@@ -35,8 +58,10 @@ format_duration() {
     fi
 }
 
-# Run a stage: stage "Label" command args...
-# Captures timing, shows spinner, prints pass/fail
+# Run a stage with timing + spinner. Captures stdout/stderr, shows pass/fail.
+#
+# Usage: stage "Label" command args...
+# Returns: 0 on success, 1 on failure (prints last 20 lines of output)
 stage() {
     local label="$1"; shift
     local start=$SECONDS
@@ -57,15 +82,15 @@ stage() {
     fi
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Config
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# 2. Set Up Environment Config
+# =============================================================================
 NAMESPACE="${CDE_APPS_NS:-otel-apps}"
 CLUSTER="${CDE_CLUSTER:-otel-dev}"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stages
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# 3. Build and Deploy Application Images
+# =============================================================================
 
 do_build_java() {
     docker build -t java-api:latest java-api/
@@ -90,7 +115,8 @@ do_vault_setup() {
 
 do_deploy_java() {
     kubectl apply -f java-api/
-    # Restart to pick up any instrumentation CR changes (OTel/Vault inject at pod creation)
+    # Restart to force pod recreation — OTel and Vault inject via mutating webhooks
+    # at pod creation time, so existing pods won't pick up CR changes
     kubectl rollout restart deployment/java-api -n "$NAMESPACE" 2>/dev/null || true
 }
 
@@ -104,15 +130,18 @@ do_ingress() {
 }
 
 do_wait_pods() {
-    # Wait for rollouts to finish first (old pods get deleted during restart)
+    # Wait for rollouts first — old pods get terminated during restart, so
+    # waiting on "all pods Ready" too early would see the dying pods
     kubectl rollout status deployment/java-api -n "$NAMESPACE" --timeout=120s
     kubectl rollout status deployment/python-api -n "$NAMESPACE" --timeout=120s
     kubectl wait --for=condition=Ready pods --all -n "$NAMESPACE" --timeout=300s
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Smoke tests
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# 4. Verify Integration with Smoke Tests
+# =============================================================================
+# Each test verifies a specific integration point to catch misconfigurations
+# early. Tests run in-order: pod state → injection → secrets → endpoints → traces.
 PASS=0
 FAIL=0
 
@@ -220,9 +249,9 @@ run_tests() {
     fi
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# 5. Execute Build-Deploy-Test Pipeline
+# =============================================================================
 
 echo -e "\n${PURPLE}${BOLD}◆ Apps${NC} Deploy & Test\n"
 

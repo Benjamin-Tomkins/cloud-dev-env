@@ -1,5 +1,33 @@
 #!/usr/bin/env bash
 # cluster.sh -- k3d lifecycle + prereqs
+#
+# How It Works:
+#   1. Cluster state: cluster_exists/cluster_running check k3d JSON output
+#   2. Prerequisites: check_prereqs verifies docker/kubectl/k3d/helm are
+#      installed, and optionally mkcert (for browser-trusted TLS certs)
+#   3. Lifecycle:
+#      create_cluster  → k3d cluster create from infra/k3d-config.yaml
+#      stop_cluster    → k3d cluster stop (preserves state)
+#      delete_cluster  → k3d cluster delete + CA cleanup
+#
+#   Cluster Lifecycle State Machine:
+#
+#     (not found)──── create_cluster ────►(Running)
+#                                          │    ▲
+#                                    stop  │    │ start
+#                                          ▼    │
+#                                        (Stopped)
+#                                          │
+#                                    delete │
+#                                          ▼
+#                                       (not found)
+#
+# Dependencies: log.sh, ui.sh, timing.sh, constants.sh, tls.sh (remove_trusted_ca),
+#               portforward.sh (stop_port_forwards)
+
+# =============================================================================
+# 1. Determine Cluster State
+# =============================================================================
 
 cluster_exists() {
     if command -v jq &>/dev/null; then
@@ -27,6 +55,8 @@ debug_cluster() {
     echo ""
 }
 
+# Guard: exit with helpful message if cluster doesn't exist or isn't running.
+# Called before any command that needs a live cluster (deploy, status, etc.)
 require_cluster() {
     log_file "DEBUG" "require_cluster: checking cluster=${CLUSTER_NAME}"
     if ! cluster_exists; then
@@ -60,6 +90,13 @@ show_context() {
     echo ""
 }
 
+# =============================================================================
+# 2. Verify Prerequisites
+# =============================================================================
+
+# Verify required tools (docker, kubectl, k3d, helm) and optional mkcert.
+# mkcert is optional — without it tls.sh falls back to self-signed CAs which
+# work fine but cause browser security warnings.
 check_prereqs() {
     log_file "INFO" "check_prereqs: verifying required tools"
     local missing=0
@@ -100,6 +137,15 @@ check_prereqs() {
     log_file "INFO" "check_prereqs: all prerequisites satisfied"
 }
 
+# =============================================================================
+# 3. Manage Cluster Lifecycle
+# =============================================================================
+
+# Create a new k3d cluster from infra/k3d-config.yaml, or start an existing
+# stopped cluster. Handles common failure modes with targeted error messages:
+#   - Port conflict (another service on 80/443/6550)
+#   - Docker not running or out of resources
+#   - Cluster already exists (advises delete first)
 create_cluster() {
     log_file "INFO" "create_cluster: cluster=${CLUSTER_NAME}"
     if cluster_exists; then

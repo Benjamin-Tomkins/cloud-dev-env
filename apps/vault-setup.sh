@@ -1,5 +1,37 @@
 #!/usr/bin/env bash
 # vault-setup.sh -- Configure Vault with secrets, auth, and policies for app pods
+#
+# How It Works:
+#   1. Wait for Vault to be unsealed
+#   2. Enable KV v2 secrets engine at secret/
+#   3. Write test secrets (db_host, db_password, redis_host, api_key)
+#   4. Enable Kubernetes auth method
+#   5. Configure Kubernetes auth with in-cluster API server
+#   6. Create read-only policy for secret/data/apps/config
+#   7. Bind service account (app-sa in otel-apps) to policy via role
+#
+# Kubernetes Auth Flow:
+#
+#   ┌─────────────┐    SA token    ┌──────────────┐   validate   ┌──────────┐
+#   │ Pod (app-sa) │──────────────►│ Vault K8s    │─────────────►│ K8s API  │
+#   │ in otel-apps │               │ Auth Method  │◄─────────────│ Server   │
+#   └─────────────┘               └──────┬───────┘   confirmed  └──────────┘
+#                                        │
+#                                  maps SA to "app" role
+#                                        │
+#                                        ▼
+#                                 ┌──────────────┐    grants    ┌────────────────────┐
+#                                 │ "app-policy"  │────────────►│ read access to     │
+#                                 │ (read-only)   │             │ secret/data/apps/* │
+#                                 └──────────────┘             └────────────────────┘
+#
+# Configuration:
+#   CDE_APPS_NS  Application namespace  (used indirectly via NAMESPACE)
+#
+# Security:
+#   vault_exec_token() pipes the root token via stdin to avoid exposing it
+#   in the host process table. The token is read with `read -r` inside the
+#   pod's shell and exported as VAULT_TOKEN within the container only.
 set -euo pipefail
 
 VAULT_NS="vault"

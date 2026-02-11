@@ -1,6 +1,31 @@
 #!/usr/bin/env bash
 # tls.sh -- TLS CA setup + trust
+#
+# Why This Exists:
+#   All CDE services use TLS via Ingress so the local environment mirrors
+#   production. This module sets up the Certificate Authority that cert-manager
+#   uses to sign those TLS certificates.
+#
+# How It Works:
+#   mkcert available?
+#     |-- YES --> Upload mkcert CA key+cert as K8s secret
+#     |           Create ClusterIssuer referencing it (browser-trusted)
+#     |
+#     '-- NO  --> Create self-signed Issuer
+#                 Generate a CA Certificate from it
+#                 Create ClusterIssuer referencing the CA (browser warnings)
+#
+#   Both paths produce a ClusterIssuer named "cde-ca-issuer" that all Ingress
+#   resources reference via cert-manager annotations.
+#
+# Dependencies: log.sh, ui.sh, constants.sh
 
+# =============================================================================
+# 1. Set Up Certificate Authority
+# =============================================================================
+
+# Create the TLS CA infrastructure (ClusterIssuer) for cert-manager.
+# Idempotent — skips if cde-ca-issuer already exists.
 setup_tls_ca() {
     # Create CDE CA infrastructure for local TLS if not exists
     if kubectl get clusterissuer cde-ca-issuer &>/dev/null; then
@@ -80,8 +105,17 @@ EOF
     fi
 }
 
-# Apply a cert-manager Certificate with retries (handles webhook race)
+# =============================================================================
+# 2. Apply Certificates with Retry
+# =============================================================================
+
+# Apply a cert-manager Certificate resource with retries.
+# The cert-manager webhook may not be fully ready right after helm install,
+# causing "connection refused" or x509 errors. We retry up to 10 times with
+# 2s delay to ride out the webhook race condition.
+#
 # Usage: apply_certificate <<EOF ... EOF
+# Returns: 0 on success, 1 after all retries exhausted
 apply_certificate() {
     local yaml
     yaml=$(cat)
@@ -101,6 +135,12 @@ apply_certificate() {
     return 1
 }
 
+# =============================================================================
+# 3. Manage System CA Trust
+# =============================================================================
+
+# Remove the CDE CA from the macOS system keychain and delete the exported
+# cert file. Called during cluster deletion to clean up trust state.
 remove_trusted_ca() {
     local script_dir ca_file
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -133,6 +173,9 @@ remove_trusted_ca() {
     fi
 }
 
+# Auto-trust the self-signed CA on macOS by adding it to the system keychain.
+# Only runs on macOS, only if a self-signed CA was created (not mkcert),
+# and only if not already trusted. Prompts for sudo.
 auto_trust_ca() {
     # Only run on macOS
     [[ "$(uname)" != "Darwin" ]] && return 0

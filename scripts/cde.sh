@@ -1,13 +1,46 @@
 #!/usr/bin/env bash
 #
 # CDE - Cloud Developer Experience
-# Simple local Kubernetes development environment manager
+# Local Kubernetes development environment manager
+#
+# How It Works:
+#   1. Parse global options (-v/--verbose, -h/--help)
+#   2. Source all library modules from scripts/lib/
+#   3. Initialize logging (timestamped file + latest.log symlink)
+#   4. Dispatch to the requested command (deploy, status, up, down, etc.)
+#
+#   ┌──────────────────────────────────────────────────────────────────┐
+#   │  CLI invocation: ./cde.sh [options] <command> [args]            │
+#   │                                                                  │
+#   │  1. Parse options (--verbose, --help)                            │
+#   │  2. Source libs:                                                 │
+#   │     constants → log → timing → ui → k8s → helm →               │
+#   │     cluster → tls → vault → services → portforward              │
+#   │  3. init_log()                                                   │
+#   │  4. Dispatch:                                                    │
+#   │     ├─ deploy all → prereqs → cluster → helm repos →            │
+#   │     │               ingress → cert-mgr → all services → summary │
+#   │     ├─ deploy <svc> → require_cluster → helm repos → deploy_*() │
+#   │     ├─ up → prereqs → create_cluster → ingress → cert-manager   │
+#   │     ├─ down / destroy → stop / delete cluster                    │
+#   │     ├─ status → cluster + services + apps table                  │
+#   │     └─ open / forward / serve → service access commands          │
+#   └──────────────────────────────────────────────────────────────────┘
+#
+# Configuration:
+#   CDE_CLUSTER        Cluster name        (default: otel-dev)
+#   CDE_APPS_NS        App namespace       (default: otel-apps)
+#   CDE_VERBOSE        Verbose output      (default: false)
+#   CDE_NONINTERACTIVE Skip prompts        (default: false)
+#   CDE_REGISTRY_PORT  Registry port       (default: 5111)
 #
 set -euo pipefail
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Source library modules
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# 1. Load Library Modules
+# =============================================================================
+# Order matters: each module may depend on earlier ones (e.g., log.sh uses
+# constants.sh colors, vault.sh uses k8s.sh wait functions).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="${SCRIPT_DIR}/lib"
 
@@ -36,9 +69,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Open in Browser
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# 2. Open Services in Browser
+# =============================================================================
 
 open_browser() {
     local url=$1
@@ -166,9 +199,9 @@ cmd_open() {
     esac
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Status
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# 3. Display Environment Status
+# =============================================================================
 
 status() {
     echo -e "\n${PURPLE}${BOLD}◆ CDE${NC} Cloud Developer Experience\n"
@@ -271,10 +304,13 @@ status() {
     echo ""
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Post-Deploy Summary
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# 4. Show Post-Deploy Summary
+# =============================================================================
 
+# Display the full post-deploy summary: service URLs, timing, credentials,
+# and endpoint verification. Credentials are retrieved from K8s secrets
+# (vault token, grafana password) or generated on the fly (dashboard token).
 show_summary() {
     echo -e "\n${GREEN}${BOLD}◆ CDE Ready!${NC}\n"
 
@@ -369,10 +405,8 @@ show_summary() {
     echo ""
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Status Header (quick snapshot for no-arg invocation)
-# ─────────────────────────────────────────────────────────────────────────────
-
+# Quick one-line snapshot shown when cde.sh is invoked with no arguments.
+# Lighter than full status() — doesn't check individual pod readiness.
 show_status_header() {
     echo -e "\n${PURPLE}${BOLD}◆ CDE${NC} - Cloud Developer Experience\n"
 
@@ -409,9 +443,9 @@ show_status_header() {
     fi
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Usage
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# 5. Print Usage and Help
+# =============================================================================
 
 usage() {
     local name
@@ -453,10 +487,12 @@ ${BLUE}Examples:${NC}
 "
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# 6. Parse Arguments and Dispatch Commands
+# =============================================================================
 
+# Entry point: parse options, init logging, dispatch to command handler.
+# deploy-all flow: prereqs → cluster → helm repos → infra → services → summary
 main() {
     # Parse global options
     while [[ $# -gt 0 ]]; do

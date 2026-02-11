@@ -1,5 +1,44 @@
 #!/usr/bin/env bash
 # k8s.sh -- Smart k8s polling, health checks (replaces all sleeps)
+#
+# Why This Exists:
+#   Fixed `sleep N` calls are fragile — too short and you hit race conditions,
+#   too long and deploys waste time. This module replaces all sleeps with
+#   state-based polling that returns as soon as the condition is met.
+#
+# How It Works:
+#   1. Health checks:   release_exists → pods_ready → svc_healthy
+#   2. Smart waits:     poll Kubernetes state in a $SECONDS-based loop with
+#                       configurable timeouts. Each returns 0 (met) or 1 (timeout).
+#   3. Tiered strategy: wait_healthy_smart chains pod-phase → container-ready
+#                       for a single "deploy and wait" call
+#
+#   Health Check Decision Tree (svc_healthy / get_health_status):
+#
+#     release_exists?
+#       ├─ NO  → "not-installed"
+#       └─ YES → pods_ready?
+#                  ├─ YES → "healthy"
+#                  └─ NO  → helm status?
+#                             ├─ deployed → "starting"
+#                             ├─ failed   → "failed"
+#                             └─ other    → "unknown"
+#
+#   wait_healthy_smart Shared Timeout:
+#
+#     ┌──────── total timeout ───────────────────────────┐
+#     │ Phase 1: pod Running │ Phase 2: containers Ready │
+#     │  (polls pod phase)   │  (remaining = total - p1) │
+#     └──────────────────────┴───────────────────────────┘
+#     If Phase 1 exceeds budget, Phase 2 gets 0 time → immediate fail
+#
+# Dependencies: log.sh, ui.sh, constants.sh
+
+# =============================================================================
+# 1. Check Service Health
+# =============================================================================
+# Quick, non-blocking checks used to skip deploys (already healthy) and to
+# build the status table. No waiting — just a point-in-time snapshot.
 
 # Check if helm release exists
 release_exists() {
@@ -27,7 +66,8 @@ pods_ready() {
     [[ "$total" -gt 0 && "$total" == "$ready" ]]
 }
 
-# Combined health check: release exists + pods running
+# Combined health check: release exists AND all pods ready.
+# Used as a gate at the top of deploy functions to skip redundant work.
 svc_healthy() {
     local name=$1 ns=$2
     release_exists "$name" "$ns" && pods_ready "$name" "$ns"
@@ -80,12 +120,17 @@ get_grafana_password() {
     kubectl get secret grafana -n observability -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d 2>/dev/null
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Smart wait functions (state-based, replaces fixed sleeps)
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# 2. Wait for Kubernetes State Changes
+# =============================================================================
+# State-based polling that replaces fixed `sleep N`. Each function polls
+# Kubernetes API in a $SECONDS-based loop (never integer countdown — that
+# breaks with `set -e` when the counter hits 0).
 
 # Wait for a pod to reach a given phase (Running, Succeeded, etc.)
+#
 # Usage: wait_for_pod_phase <ns> <label-selector> <phase> [timeout_secs]
+# Returns: 0 when phase reached, 1 on timeout
 wait_for_pod_phase() {
     local ns="$1" selector="$2" phase="$3" timeout="${4:-60}"
     local start=$SECONDS
@@ -168,8 +213,12 @@ wait_for_endpoint() {
     return 1
 }
 
-# Smart health check: combined pod phase + ready + optional endpoint
+# Two-phase smart health check: pod phase → container readiness.
+# Chains wait_for_pod_phase and wait_healthy with a shared timeout,
+# so total wait never exceeds the specified limit.
+#
 # Usage: wait_healthy_smart <name> <ns> [timeout]
+# Returns: 0 when healthy, 1 on timeout
 wait_healthy_smart() {
     local name="$1" ns="$2" timeout="${3:-90}"
     local start_seconds=$SECONDS
@@ -197,8 +246,12 @@ wait_healthy_smart() {
     return 0
 }
 
-# Wait for endpoint slice to have addresses (for webhook readiness)
+# Wait for EndpointSlice to have addresses (used for webhook readiness).
+# Webhooks can fail with "connection refused" even after the pod is Ready,
+# because the EndpointSlice hasn't propagated yet.
+#
 # Usage: wait_for_endpoint_slice <ns> <service-name> [timeout_secs]
+# Returns: 0 when addresses found, 1 on timeout
 wait_for_endpoint_slice() {
     local ns="$1" svc="$2" timeout="${3:-30}"
     local start=$SECONDS

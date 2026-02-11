@@ -1,11 +1,40 @@
 #!/usr/bin/env bash
 # ui.sh -- Spinners, color legend, format helpers
+#
+# How It Works:
+#   1. spinner_start() spawns a background subshell that loops braille chars
+#   2. Label updates are communicated via a temp file (NOT a FIFO — FIFOs block
+#      on open() until both ends are connected, which deadlocks single-threaded
+#      label updates). The spinner subshell re-reads the file each tick.
+#   3. spinner_stop() kills the background process, then prints a final status
+#      line using \033[K (clear to EOL) to erase any leftover spinner chars
+#   4. spinner_update() overwrites the temp file to change the label mid-flight
+#
+#   Spinner Lifecycle:
+#
+#     spinner_start("label")
+#         │
+#         ├──► create temp file with "label"
+#         ├──► spawn background subshell ──► loop: read file → print \r ⠋ label
+#         │                                        │               ▲
+#         │                                        └───sleep 0.08──┘
+#         │
+#     spinner_update("new label")  ──► overwrite temp file
+#         │
+#     spinner_stop("success")
+#         ├──► kill background PID
+#         ├──► print \r ✓ label \033[K  (clear to EOL)
+#         └──► rm temp file
+#
+# Dependencies: constants.sh (colors)
 
 _SPINNER_CHARS='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
 _SPINNER_PID=""
 _SPINNER_LABEL_FILE=""
 
-# Start a spinner with a label
+# Start a spinner with a label. The spinner runs in a background subshell
+# and must be stopped with spinner_stop() before printing other output.
+#
 # Usage: spinner_start "Deploying Vault..."
 spinner_start() {
     local label="$1"
@@ -38,10 +67,13 @@ spinner_update() {
     echo "$1" > "$_SPINNER_LABEL_FILE" 2>/dev/null || true
 }
 
-# Stop the spinner and show final status
+# Stop the spinner and show final status.
+# Kills background process, cleans up temp file, prints result line.
+#
 # Usage: spinner_stop "success" "Vault" "1m 12s"
 #        spinner_stop "error" "Vault"
 #        spinner_stop "warn" "Vault (starting...)"
+#        spinner_stop "skip" "Vault"
 spinner_stop() {
     local status="$1"
     local label="$2"

@@ -1,12 +1,25 @@
 #!/usr/bin/env bash
 # helm.sh -- Helm repo/release management
+#
+# How It Works:
+#   1. ensure_helm_repo() adds individual repos with a required/optional flag:
+#      - Required repos (ingress-nginx, jetstack, open-telemetry, hashicorp)
+#        cause a hard stop on failure — these are needed for core infrastructure.
+#      - Optional repos (headlamp, grafana, jaeger, bitnami) warn and continue
+#        on failure — the environment works without them.
+#   2. setup_helm_repos() adds all repos, runs helm repo update, and reports
+#      overall status via spinner.
+#
+# Dependencies: log.sh, timing.sh, ui.sh
 
 # Check if a helm repo exists
 helm_repo_exists() {
     helm repo list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$1"
 }
 
-# Add a helm repo with verification
+# Add a helm repo with verification.
+# Usage: ensure_helm_repo <name> <url> [required=true]
+# Returns: 0 on success, 1 on failure (only for required repos)
 ensure_helm_repo() {
     local name="$1" url="$2" required="${3:-true}"
 
@@ -33,6 +46,8 @@ ensure_helm_repo() {
     return 0
 }
 
+# Add all required + optional repos, update, and report status.
+# Exits on failure if any required repo cannot be added.
 setup_helm_repos() {
     log_file "INFO" "setup_helm_repos: starting"
     timer_start "Helm repos"

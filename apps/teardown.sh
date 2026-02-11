@@ -2,6 +2,19 @@
 #
 # teardown.sh -- Remove all app resources for a clean redeploy
 #
+# What Gets Removed:
+#   - App deployments + services (java-api, python-api)
+#   - Ingress resource
+#   - Service account
+#   - Vault app config (role, policy, secrets) — best-effort if vault pod exists
+#
+# What's Preserved:
+#   - Namespace (kept for quick redeploy without needing to recreate it)
+#   - All CDE infrastructure services (vault, otel, etc.)
+#
+# Vault cleanup is best-effort because the vault pod may already be gone
+# (e.g., if teardown_services ran first). Errors are silently ignored.
+#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

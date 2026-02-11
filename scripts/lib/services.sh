@@ -1,5 +1,55 @@
 #!/usr/bin/env bash
 # services.sh -- All deploy_* functions except vault, remove/teardown
+#
+# How It Works:
+#   Each deploy_*() function follows the same pattern:
+#   1. Skip if already healthy (svc_healthy check)
+#   2. Start timer
+#   3. Ensure TLS CA exists (setup_tls_ca)
+#   4. helm upgrade --install with inline config
+#   5. Create Ingress resource with cert-manager annotation for automatic TLS
+#   6. Timer stop, spinner result
+#
+#   Standard Deploy Pattern:
+#
+#     svc_healthy? ──YES──► spinner_stop "skip" ──► return
+#        │
+#        NO
+#        ▼
+#     timer_start ──► setup_tls_ca ──► helm upgrade --install
+#        │                                     │
+#        │                              success?──NO──► spinner "error"
+#        │                                     │
+#        │                                    YES
+#        │                                     ▼
+#        │                              kubectl apply Ingress
+#        │                                     │
+#        └──────────────────────────────► timer_stop
+#                                              ▼
+#                                        spinner "success"
+#
+# cert-manager Webhook Readiness (Three-Phase):
+#   After helm --wait returns, the webhook may still reject requests because
+#   TLS cert propagation lags behind pod readiness.
+#
+#     Phase 1: Pod Ready         ──► k8s reports container running
+#     Phase 2: EndpointSlice     ──► k8s networking has propagated addresses
+#     Phase 3: Dry-run Issuer    ──► full API server → webhook TLS path works
+#
+# OTel Instrumentation:
+#   The OTel Operator uses Instrumentation CRs (not code changes) to inject
+#   auto-instrumentation into pods. The CR specifies which language agent to
+#   inject and where to send traces (Jaeger's OTLP endpoint). Logs and metrics
+#   exporters are set to "none" — we only collect traces for now.
+#
+# Dependencies: log.sh, ui.sh, timing.sh, k8s.sh, tls.sh, helm.sh, constants.sh,
+#               portforward.sh (stop_port_forwards for teardown)
+
+# =============================================================================
+# 1. Deploy Infrastructure Services
+# =============================================================================
+# NGINX Ingress and cert-manager are required by all other services.
+# They must be deployed first and are not optional.
 
 deploy_ingress() {
     if svc_healthy ingress-nginx ingress-nginx; then
@@ -55,19 +105,21 @@ deploy_cert_manager() {
         --set cainjector.resources.requests.memory=32Mi \
         --wait --timeout 3m 2>&1 | verbose_or_log; then
 
-        # Three-phase cert-manager webhook readiness (faster than brute-force loop)
+        # Three-phase cert-manager webhook readiness strategy.
+        # The webhook must be fully operational before any Certificate/Issuer
+        # resources can be created, but "pod Ready" alone isn't sufficient —
+        # the API server → webhook TLS handshake can still fail.
         spinner_update "cert-manager: webhook readiness..."
 
-        # Phase 1: Wait for webhook pod Ready (should be instant after --wait)
+        # Phase 1: Pod Ready (should be instant after --wait)
         wait_healthy cert-manager cert-manager 30
 
-        # Phase 2: Wait for EndpointSlice to have addresses
+        # Phase 2: EndpointSlice has addresses (k8s networking is propagated)
         wait_for_endpoint_slice cert-manager cert-manager-webhook 15
 
-        # Phase 3: Dry-run Issuer apply to confirm webhook is fully ready
-        # This exercises the full API server -> webhook TLS path.
-        # Uses a self-signed Issuer (not Certificate) since it doesn't reference
-        # other resources and the webhook will accept it without validation errors.
+        # Phase 3: Dry-run an Issuer apply to exercise the full API server →
+        # webhook TLS path. Uses a self-signed Issuer (not Certificate) since
+        # it doesn't reference other resources, so the webhook accepts it.
         local retries=60
         while [[ $retries -gt 0 ]]; do
             if kubectl apply --dry-run=server -f - &>/dev/null <<EOF
@@ -102,6 +154,11 @@ EOF
     fi
 }
 
+# =============================================================================
+# 2. Deploy Observability Stack
+# =============================================================================
+# OTel operator, instrumentation CRs, Jaeger, and Grafana.
+
 deploy_otel() {
     local target_ns="opentelemetry-operator-system"
 
@@ -119,7 +176,8 @@ deploy_otel() {
     spinner_start "OpenTelemetry Operator..."
     log_file "INFO" "Deploying OpenTelemetry Operator..."
 
-    # Auto-detect and clean up orphaned resources from wrong namespace
+    # Auto-detect and clean up orphaned OTel resources if a previous install
+    # landed in a different namespace (e.g., manual install vs chart default)
     local crd_ns
     crd_ns=$(kubectl get crd opampbridges.opentelemetry.io -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-namespace}' 2>/dev/null || echo "")
 
@@ -135,7 +193,8 @@ deploy_otel() {
         kubectl delete ns "$crd_ns" --ignore-not-found 2>&1 | verbose_or_log || true
     fi
 
-    # Retry helm install — cert-manager webhook may not be fully ready yet (x509 race)
+    # Retry helm install — cert-manager webhook may still reject CRDs with x509
+    # errors if its TLS cert hasn't fully propagated. Three attempts with 5s delay.
     local otel_ok=false
     local otel_attempts=3
     while [[ $otel_attempts -gt 0 ]]; do
@@ -169,6 +228,10 @@ deploy_otel() {
     fi
 }
 
+# Deploy Instrumentation CRs that tell the OTel Operator which language agents
+# to inject and where to send traces. Pods in the otel-apps namespace that have
+# the annotation `instrumentation.opentelemetry.io/inject-java: "true"` (or
+# python) will automatically get an init container with the agent.
 deploy_otel_instrumentation() {
     # Skip if already exists
     if kubectl get instrumentation java-instrumentation -n otel-apps &>/dev/null && \
@@ -384,6 +447,11 @@ EOF
     fi
 }
 
+# =============================================================================
+# 3. Deploy Data Services
+# =============================================================================
+# Redis and PostgreSQL with TLS certificates.
+
 deploy_redis() {
     if svc_healthy redis data; then
         log_file "INFO" "deploy_redis: already healthy, skipping"
@@ -514,6 +582,10 @@ EOF
     fi
 }
 
+# =============================================================================
+# 4. Deploy Dashboard UI
+# =============================================================================
+
 deploy_dashboard() {
     if svc_healthy headlamp headlamp; then
         log_file "INFO" "deploy_dashboard: already healthy, skipping"
@@ -594,10 +666,12 @@ EOF
     fi
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Teardown
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# 5. Remove Deployed Services
+# =============================================================================
 
+# Remove a single helm release by name and namespace.
+# No-op if the release isn't installed.
 remove_service() {
     local name=$1
     local ns=$2
@@ -616,6 +690,8 @@ remove_service() {
     fi
 }
 
+# Remove all services in reverse dependency order.
+# Services are removed in reverse install order so dependents go first.
 teardown_services() {
     log_file "INFO" "teardown_services: starting"
     echo -e "\n${PURPLE}◆ CDE${NC} Teardown\n"

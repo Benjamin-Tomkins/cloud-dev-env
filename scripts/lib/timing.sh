@@ -1,20 +1,31 @@
 #!/usr/bin/env bash
 # timing.sh -- Stage timer functions (bash 3.x compatible, uses $SECONDS)
 #
-# Uses parallel indexed arrays instead of associative arrays for bash 3.x compat.
+# How It Works:
+#   1. timer_start() records a name and the current $SECONDS value
+#   2. timer_stop() computes elapsed time and logs the duration to file
+#   3. timer_show()/timer_raw() retrieve durations for display or computation
+#   4. show_timing_summary() prints a formatted table of all recorded stages
+#
+# Why parallel indexed arrays: bash 3.x (macOS default) has no associative
+# arrays. Three parallel arrays (_NAMES, _STARTS, _DURATIONS) simulate a
+# name→value map using linear search. This is fine for the ~15 timers we track.
+#
+# Dependencies: log.sh (log_file), constants.sh (colors)
 
 _TIMER_NAMES=()
 _TIMER_STARTS=()
 _TIMER_DURATIONS=()
 
-# Start a named timer
+# Start a named timer. Call timer_stop() with the same name to record duration.
 timer_start() {
     local name="$1"
     _TIMER_NAMES+=("$name")
     _TIMER_STARTS+=("$SECONDS")
 }
 
-# Stop a named timer, record duration
+# Stop a named timer, record duration, and log it to file.
+# Returns: 0 on success, logs warning if timer name not found.
 timer_stop() {
     local name="$1"
     local now="$SECONDS"
@@ -46,7 +57,7 @@ format_duration() {
     fi
 }
 
-# Get duration for a named timer (returns formatted string)
+# Get duration for a named timer (returns formatted string like "1m 12s")
 timer_show() {
     local name="$1"
     local entry
@@ -61,7 +72,7 @@ timer_show() {
     echo "?"
 }
 
-# Get raw seconds for a named timer
+# Get raw seconds for a named timer (for arithmetic, not display)
 timer_raw() {
     local name="$1"
     local entry
