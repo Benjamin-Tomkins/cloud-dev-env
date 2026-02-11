@@ -10,14 +10,14 @@ Local Kubernetes environment for experimenting with OpenTelemetry auto-instrumen
 
 ```bash
 # Full setup in one command (creates cluster + deploys everything)
-./cde.sh deploy all
+./cde deploy all
 
 # Check what's running
-./cde.sh status
+./cde status
 
 # Open a dashboard in your browser
-./cde.sh open vault
-./cde.sh open grafana
+./cde open vault
+./cde open grafana
 ```
 
 ## Prerequisites
@@ -93,12 +93,12 @@ Other:
 ### Examples
 
 ```bash
-./cde.sh deploy all          # Full setup in one command
-./cde.sh status              # See what's running
-./cde.sh open vault          # Open Vault in browser
-./cde.sh -v deploy postgres  # Deploy with verbose output
-./cde.sh teardown            # Remove all services
-./cde.sh destroy             # Delete the cluster entirely
+./cde deploy all             # Full setup in one command
+./cde status                 # See what's running
+./cde open vault             # Open Vault in browser
+./cde -v deploy postgres     # Deploy with verbose output
+./cde teardown               # Remove all services
+./cde destroy                # Delete the cluster entirely
 ```
 
 ## Project Structure
@@ -192,7 +192,7 @@ Traces flow from the app pods to Jaeger via OTLP/HTTP. Logs and metrics export a
 
 ### Design Principles
 
-- Single CLI (`./cde.sh`) manages the entire lifecycle
+- Single CLI (`./cde`) manages the entire lifecycle
 - All services accessible over HTTPS with valid certificates
 - Smart waits replace fixed sleeps (polls pod/endpoint state)
 - Unique credentials generated per deployment (Grafana, Vault)
@@ -205,7 +205,7 @@ If you have `mkcert` installed and ran `mkcert -install`, all certificates are a
 Without mkcert, the CDE uses a self-signed CA. To trust it:
 
 ```bash
-./cde.sh trust-ca    # Adds the CA to macOS system keychain (requires sudo)
+./cde trust-ca       # Adds the CA to macOS system keychain (requires sudo)
 ```
 
 ## Troubleshooting
@@ -214,8 +214,8 @@ Without mkcert, the CDE uses a self-signed CA. To trust it:
 ```bash
 docker info                    # Verify Docker is running
 k3d cluster list               # Check existing clusters
-./cde.sh destroy               # Clean up
-./cde.sh deploy all            # Retry
+./cde destroy                  # Clean up
+./cde deploy all               # Retry
 ```
 
 ### Service shows as failed
@@ -231,6 +231,6 @@ cat log/cde-*.log | tail -50   # Recent log entries
 
 ### Reset everything
 ```bash
-./cde.sh teardown              # Remove all services
-./cde.sh deploy all            # Fresh deploy
+./cde teardown                 # Remove all services
+./cde deploy all               # Fresh deploy
 ```
