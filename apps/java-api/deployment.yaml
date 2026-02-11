@@ -1,0 +1,58 @@
+# Java Spring Boot API with OTel auto-instrumentation and Vault injection
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: java-api
+  namespace: otel-apps
+  labels:
+    app: java-api
+    version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: java-api
+  template:
+    metadata:
+      labels:
+        app: java-api
+        version: v1
+      annotations:
+        instrumentation.opentelemetry.io/inject-java: "java-instrumentation"
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "app"
+        vault.hashicorp.com/agent-inject-secret-config: "secret/data/apps/config"
+        vault.hashicorp.com/agent-pre-populate-only: "true"
+    spec:
+      serviceAccountName: app-sa
+      containers:
+        - name: java-api
+          image: java-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: java-api
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace=otel-apps,deployment.environment=development"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 5

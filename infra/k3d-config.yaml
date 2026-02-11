@@ -1,0 +1,56 @@
+# k3d cluster configuration for otel-experiments
+# Optimized for Apple Silicon (M1/M2) with 64GB RAM
+# Reference: https://k3d.io/v5.x/usage/configfile/
+
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: otel-dev
+servers: 1
+agents: 2
+image: rancher/k3s:v1.31.4-k3s1
+
+# Port mappings for local access
+# SECURITY: Bind to localhost only - no external network access
+ports:
+  # HTTP ingress (localhost only)
+  - port: 127.0.0.1:8080:80
+    nodeFilters:
+      - loadbalancer
+  # HTTPS ingress (localhost only)
+  - port: 127.0.0.1:8443:443
+    nodeFilters:
+      - loadbalancer
+  # NOTE: NodePort range removed for security - use ingress for all access
+
+# Resource configuration
+options:
+  k3d:
+    wait: true
+    timeout: "120s"
+  k3s:
+    extraArgs:
+      - arg: --disable=traefik
+        nodeFilters:
+          - server:*
+      - arg: --disable=servicelb
+        nodeFilters:
+          - server:*
+  kubeconfig:
+    updateDefaultKubeconfig: true
+    switchCurrentContext: true
+
+# Volumes for persistent data
+volumes:
+  # Shared volume for telemetry data (collector persistence)
+  - volume: otel-dev-data:/var/lib/rancher/k3s/storage
+    nodeFilters:
+      - all
+
+# Registry configuration (optional, for local image caching)
+# SECURITY: Bind to localhost only
+registries:
+  create:
+    name: otel-registry.localhost
+    host: "127.0.0.1"
+    hostPort: "5111"

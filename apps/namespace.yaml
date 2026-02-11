@@ -1,0 +1,12 @@
+# Application namespace with security policies
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: otel-apps
+  labels:
+    app.kubernetes.io/name: otel-apps
+    # Use baseline for local dev (restricted conflicts with OTel/Vault sidecars)
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
