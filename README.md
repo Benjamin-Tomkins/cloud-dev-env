@@ -1,6 +1,6 @@
 # CDE - Cloud Developer Environment
 
-Local Kubernetes environment for experimenting with OpenTelemetry auto-instrumentation, HashiCorp Vault secrets management, and cloud-native observability patterns.
+Local Kubernetes environment for experimenting with OpenTelemetry auto-instrumentation, HashiCorp Vault secrets management, and cloud-native observability patterns (on MacOS).
 
 **Goal:** Fast local iteration on K8s configurations with zero observability code in applications.
 
